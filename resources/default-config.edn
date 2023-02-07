@@ -1,0 +1,7 @@
+{:config-dir #join [#ref [:config-home] "/clojoyeur"],
+ :config-home
+   #or [#env XDG_CONFIG_HOME #join [#env HOME "/.config"]],
+ :data-dir #join [#ref [:data-home] "/clojoyeur"],
+ :data-home
+   #or [#env XDG_DATA_HOME #join [#env HOME "/.local/share"]],
+ :refresh-on-command false}
