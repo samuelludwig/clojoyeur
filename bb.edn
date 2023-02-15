@@ -1,0 +1,15 @@
+{:paths ["." "bb"]
+ :pods {huahaiy/datalevin {:version "0.7.12"}}
+ :deps {com.taoensso/timbre {:mvn/version "6.0.4"}
+        com.widdindustries/cljc.java-time {:mvn/version "0.1.21"}
+        aero/aero {:mvn/version "1.1.6"}
+        org.babashka/http-client {:mvn/version "0.1.4"}
+        babashka/process {:mvn/version "0.4.13"}
+        djblue/portal {:mvn/version "0.35.0"}}
+        ;weavejester/medley {:mvn/version "1.5.0"}}
+ :tasks {clean {:doc "Removes target folder"
+                :requires ([babashka.fs :as fs])
+                :task (fs/delete-tree "target")}
+         setup-db {:doc "Creates a test table in the specified mysql db"
+                   :requires ([archivist.dev :as dev])
+                   :task (dev/setup-db)}}}
