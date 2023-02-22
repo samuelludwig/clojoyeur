@@ -19,17 +19,17 @@
   ([env-name default] (or (System/getenv env-name) default))
   ([env-name] (System/getenv env-name)))
 
+(def config-home (read-env "XDG_CONFIG_HOME" (fs/expand-home "~/.config")))
+
+(def data-home (read-env "XDG_DATA_HOME" (fs/expand-home "~/.local/share")))
+
 (def config-order
-  ["/etc/clojoyeur/config.edn"
-   (str (read-env "XDG_CONFIG_HOME" (fs/expand-home "~/.config"))
-        "/clojoyeur/config.edn")])
+  ["/etc/clojoyeur/config.edn" (str config-home "/clojoyeur/config.edn")])
 
 (def config-defaults
   {:clojars-feed-url "https://clojars.org/repo/feed.clj.gz",
    :clojars-feed-destination "/tmp/feed.clj.gz",
-   :data-dir         (str (read-env "XDG_DATA_HOME"
-                                    (fs/expand-home "~/.local/share"))
-                          "/cloyeur")})
+   :data-dir         (str data-home "/cloyeur")})
 
 (defn read-config
   [path & aero-opts]
@@ -42,9 +42,18 @@
          (map #(read-config %))
          (cons config-defaults)))) ; append defaults to start
 
-(def clojars-feed-url "http://clojars.org/repo/feed.clj.gz")
+(def clojars-feed-url
+  (-> config
+      :clojars-feed-url))
 
-(def clojars-feed-destination "/tmp/feed.clj.gz")
+(def clojars-feed-destination
+  (-> config
+      :clojars-feed-destination))
+
+(defn copy [uri file]
+  (with-open [in (io/input-stream uri)
+              out (io/output-stream file)]
+    (io/copy in out)))
 
 ; (io/copy
 ;   (:body (http/get clojars-feed-url {:as :stream}))
@@ -57,7 +66,19 @@
 
 (defn download-web-file
   [url destination]
-  (io/copy (:body (http/get url {:as :stream})) (io/file destination)))
+  (try [:ok
+        (io/copy (:body (http/get url {:as :stream})) (io/file destination))]
+       (catch Exception _ [:error (str "Download URL " url " could not be resolved.")])))
+  ; (let [input (slurp url)
+  ;       file (io/file destination)]
+  ;   (io/copy input file)))
+
+(defn remove-from-end
+  "Remove last appearance of a given pattern in a string.
+  
+  From https://stackoverflow.com/questions/13705677/clojure-remove-last-entrance-of-pattern-in-string"
+  [s end]
+  (if (clojure.string/ends-with? s end) (subs s 0 (- (count s) (count end))) s))
 
 (defn gunzip
   "Runs a bare `gunzip` on the given file, removes the destination file first if
@@ -68,25 +89,22 @@
                  "gunzip needs to be present on your machine and in your PATH, "
                  "exiting for now..."))
         (System/exit 1))
-    (do (fs/delete-if-exists fname) (sh (str "gunzip " fname)))))
+    (do (fs/delete-if-exists (remove-from-end fname ".gz")) (sh (str "gunzip " fname)))))
 
 (def schema
   {:package/versions       {:db/cardinality :db.cardinality/many,
                             :db/valueType   :db.type/string},
-   :package.scm/connection {:db/valueType :db.type/string},
-   :package.scm/developer-connection {:db/valueType :db.type/string},
-   :package.scm/tag        {:db/valueType :db.type/string},
-   :package.scm/url        {:db/valueType :db.type/string},
+   ;:package.scm/connection {:db/valueType :db.type/string},
+   ;:package.scm/developer-connection {:db/valueType :db.type/string},
+   ;:package.scm/tag        {:db/valueType :db.type/string},
+   ;:package.scm/url        {:db/valueType :db.type/string},
    :package/scm            {:db/valueType  :db.type/tuple,
                             :db/tupleAttrs [:package.scm/connection
                                             :package.scm/developer-connection
                                             :package.scm/url :package.scm/tag]},
-   :package/description    {:db/valueType :db.type/string,
-                            :db/fulltext true},
-   :package/artifact-id    {:db/valueType :db.type/string
-                            :db/fulltext true},
-   :package/group-id       {:db/valueType :db.type/string,
-                            :db/fulltext true},
+   :package/description    {:db/valueType :db.type/string, :db/fulltext true},
+   :package/artifact-id    {:db/valueType :db.type/string, :db/fulltext true},
+   :package/group-id       {:db/valueType :db.type/string, :db/fulltext true},
    :package/id             {:db/valueType  :db.type/tuple,
                             :db/tupleAttrs [:package/group-id
                                             :package/artifact-id],
@@ -149,37 +167,66 @@
            :data-dir)
        "/feed"))
 
-(defn clean-db
-  []
-  (fs/delete-tree db-location))
+(defn clean-db [] (fs/delete-tree db-location))
+
   ;"/home/dot/.local/share/cloyeur/feed")
 (def conn (d/get-conn db-location schema))
 (comment
   (d/close conn)
   (clean-db))
 
-(defn update-db [conn]
-  (process-file-by-lines "./resources/testfeed.clj"
+(defn insert-packages-into-db
+  [conn packages-file]
+  (process-file-by-lines packages-file
                          feed-map-str->package-map
                          #(insert-package conn %)))
+
+(defn- error? [x] (= :error x))
+
+;
+; (defn remove-from-end
+;   "Remove last appearance of a given pattern in a string.
+;   
+;   From https://stackoverflow.com/questions/13705677/clojure-remove-last-entrance-of-pattern-in-string"
+;   [s end]
+;   (if (.endsWith s end) (.substring s 0 (- (count s) (count end))) s))
+;
+;(remove-from-end clojars-feed-destination ".gz")
+
+(defn update-db
+  [conn
+   {:keys [clojars-feed-url clojars-feed-destination data-dir], :as _config}]
+  (let [[dl-status dl-msg] (download-web-file clojars-feed-url
+                                              clojars-feed-destination)]
+    (if (error? dl-status)
+      (do (println dl-msg) (System/exit 1))
+      (do (gunzip clojars-feed-destination)
+          (clean-db)
+          (insert-packages-into-db conn
+                                   (remove-from-end clojars-feed-destination
+                                                    ".gz"))))))
+
+(defn search-for
+  [phrase]
+  (d/q '[:find (pull ?e [*]) :in $ ?q :where [(fulltext $ ?q) [[?e]]]]
+       (d/db conn)
+       phrase))
+
+(update-db conn config) ;; TODO: Figure out how to insert nil values.
 
 (comment
   (d/q '[:find (pull ?e [*]) :in $ ?group-id :where [?e :package/id ?group-id]]
        (d/db conn)
        ["swank-clojure" "swank-clojure"])
 
-  ;; fulltext
-  (d/q '[:find (pull ?e [*]) 
-         :in $ ?q 
-         :where [(fulltext $ ?q) [[?e]]]]
+  ;; fulltext search
+  (d/q '[:find (pull ?e [*]) :in $ ?q :where [(fulltext $ ?q) [[?e]]]]
        (d/db conn)
-       "technomancy")
+       "swank clojure")
+  (search-for "swank")
 
-  (d/q '[:find (pull ?e [*]) 
-         :in $
-         :where [?e _ _]]
-       (d/db conn))
-
+  ;; Show me everything
+  (d/q '[:find (pull ?e [*]) :in $ :where [?e _ _]] (d/db conn))
   (d/q '[:find ?scm :in $ ?group-id :where [?e :package/id ?group-id]
          [?e :package/scm ?scm]]
        (d/db conn)
@@ -189,7 +236,6 @@
 
 (comment
   (d/close conn))
-  ;(d/close last-weeks-data))
 
 (comment
   (require '[clojure.repl :as r])
