@@ -50,8 +50,9 @@
   (-> config
       :clojars-feed-destination))
 
-(defn copy [uri file]
-  (with-open [in (io/input-stream uri)
+(defn copy
+  [uri file]
+  (with-open [in  (io/input-stream uri)
               out (io/output-stream file)]
     (io/copy in out)))
 
@@ -68,7 +69,8 @@
   [url destination]
   (try [:ok
         (io/copy (:body (http/get url {:as :stream})) (io/file destination))]
-       (catch Exception _ [:error (str "Download URL " url " could not be resolved.")])))
+       (catch Exception _
+         [:error (str "Download URL " url " could not be resolved.")])))
   ; (let [input (slurp url)
   ;       file (io/file destination)]
   ;   (io/copy input file)))
@@ -89,15 +91,16 @@
                  "gunzip needs to be present on your machine and in your PATH, "
                  "exiting for now..."))
         (System/exit 1))
-    (do (fs/delete-if-exists (remove-from-end fname ".gz")) (sh (str "gunzip " fname)))))
+    (do (fs/delete-if-exists (remove-from-end fname ".gz"))
+        (sh (str "gunzip " fname)))))
 
 (def schema
   {:package/versions       {:db/cardinality :db.cardinality/many,
                             :db/valueType   :db.type/string},
-   ;:package.scm/connection {:db/valueType :db.type/string},
-   ;:package.scm/developer-connection {:db/valueType :db.type/string},
-   ;:package.scm/tag        {:db/valueType :db.type/string},
-   ;:package.scm/url        {:db/valueType :db.type/string},
+   :package.scm/connection {:db/valueType :db.type/string},
+   :package.scm/developer-connection {:db/valueType :db.type/string},
+   :package.scm/tag        {:db/valueType :db.type/string},
+   :package.scm/url        {:db/valueType :db.type/string},
    :package/scm            {:db/valueType  :db.type/tuple,
                             :db/tupleAttrs [:package.scm/connection
                                             :package.scm/developer-connection
@@ -114,11 +117,11 @@
   [{:keys [versions description artifact-id group-id scm], :as _feed-map}]
   (let [{:keys [connection developer-connection url tag]} scm]
     {:package/versions       versions,
-     :package/description    description,
-     :package.scm/connection connection,
-     :package.scm/developer-connection developer-connection,
-     :package.scm/url        url,
-     :package.scm/tag        tag,
+     :package/description    (or description ""),
+     :package.scm/connection (or connection ""),
+     :package.scm/developer-connection (or developer-connection ""),
+     :package.scm/url        (or url ""),
+     :package.scm/tag        (or tag ""),
      :package/artifact-id    artifact-id,
      :package/group-id       group-id}))
 
@@ -175,11 +178,18 @@
   (d/close conn)
   (clean-db))
 
+#_(defn insert-packages-into-db
+    [conn packages-file]
+    (process-file-by-lines packages-file
+                           feed-map-str->package-map
+                           #(insert-package conn %)))
+
 (defn insert-packages-into-db
   [conn packages-file]
-  (process-file-by-lines packages-file
-                         feed-map-str->package-map
-                         #(insert-package conn %)))
+  (with-open [rdr (io/reader packages-file)]
+    (let [packages (pmap feed-map-str->package-map (line-seq rdr))]
+      (d/transact! conn packages))))
+    
 
 (defn- error? [x] (= :error x))
 
@@ -187,7 +197,8 @@
 ; (defn remove-from-end
 ;   "Remove last appearance of a given pattern in a string.
 ;   
-;   From https://stackoverflow.com/questions/13705677/clojure-remove-last-entrance-of-pattern-in-string"
+;   From
+;   https://stackoverflow.com/questions/13705677/clojure-remove-last-entrance-of-pattern-in-string"
 ;   [s end]
 ;   (if (.endsWith s end) (.substring s 0 (- (count s) (count end))) s))
 ;
@@ -212,22 +223,21 @@
        (d/db conn)
        phrase))
 
-(update-db conn config) ;; TODO: Figure out how to insert nil values.
+(update-db conn config) ;; Need to make this faster, just pins one CPU for eternity
 
 (comment
   (d/q '[:find (pull ?e [*]) :in $ ?group-id :where [?e :package/id ?group-id]]
        (d/db conn)
        ["swank-clojure" "swank-clojure"])
-
   ;; fulltext search
   (d/q '[:find (pull ?e [*]) :in $ ?q :where [(fulltext $ ?q) [[?e]]]]
        (d/db conn)
        "swank clojure")
   (search-for "swank")
-
   ;; Show me everything
   (d/q '[:find (pull ?e [*]) :in $ :where [?e _ _]] (d/db conn))
-  (d/q '[:find ?scm :in $ ?group-id :where [?e :package/id ?group-id]
+  ;; Show me the scm data for the following package
+  (d/q '[:find ?scm :in $ ?id :where [?e :package/id ?id]
          [?e :package/scm ?scm]]
        (d/db conn)
        ["swank-clojure" "swank-clojure"]))
